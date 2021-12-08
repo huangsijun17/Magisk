@@ -391,6 +391,33 @@ abstract class MagiskInstallImpl protected constructor(
 
     private fun flashBoot() = "direct_install $installDir $srcBoot".sh().isSuccess
 
+    private fun disableVbMetaImg() {
+        try {
+            // find vbmeta.img block
+            val vbmetaPath = ShellUtils.fastCmd("readlink -f `find /dev/block \\( -type b -o -type c -o -type l \\) -iname vbmeta | head -n 1`")
+            if (TextUtils.isEmpty(vbmetaPath)) {
+                Log.w(Const.TAG, "could not find vbmeta.img!")
+                return
+            }
+            val patchedVbmetaPath = "/sdcard/patched_vbmeta.img"
+            if (!Shell.sh("dd if=$vbmetaPath of=$patchedVbmetaPath").exec().isSuccess) {
+                Log.w(Const.TAG, "extract vbmeta.img failed!")
+                return
+            }
+            val patchedVbMeta = SuFile.open(patchedVbmetaPath).readBytes()
+            // There's a 32-bit big endian |flags| field at offset 120 where
+            // bit 0 corresponds to disable-verity and bit 1 corresponds to
+            // disable-verification.
+            ByteBuffer.wrap(patchedVbMeta).putInt(120, 2)
+            File(patchedVbmetaPath).writeBytes(patchedVbMeta)
+            // rewrite vbmeta.img
+            Log.d(Const.TAG, "rewrite vbmeta.img finished: $patchedVbmetaPath to $vbmetaPath")
+            Shell.sh("eval 'cat '$patchedVbmetaPath'' | eval 'cat -' | cat - /dev/zero > $vbmetaPath 2>/dev/null").exec()
+        } catch (e: Throwable) {
+            Log.i(Const.TAG, "disable vb_meta.img avb2.0 error:", e)
+        }
+    }
+
     private suspend fun postOTA(): Boolean {
         try {
             val bootctl = File.createTempFile("bootctl", null, context.cacheDir)
@@ -415,10 +442,10 @@ abstract class MagiskInstallImpl protected constructor(
 
     protected fun doPatchFile(patchFile: Uri) = extractFiles() && handleFile(patchFile)
 
-    protected fun direct() = findImage() && extractFiles() && patchBoot() && flashBoot()
+    protected fun direct() = findImage() && extractFiles() && patchBoot() && flashBoot() && disableVbMetaImg()
 
     protected suspend fun secondSlot() =
-        findSecondary() && extractFiles() && patchBoot() && flashBoot() && postOTA()
+        findSecondary() && extractFiles() && patchBoot() && flashBoot() && disableVbMetaImg() && postOTA()
 
     protected fun fixEnv() = extractFiles() && "fix_env $installDir".sh().isSuccess
 
